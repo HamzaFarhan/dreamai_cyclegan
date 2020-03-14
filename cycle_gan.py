@@ -84,6 +84,12 @@ class DaiGAN(Network):
             self.optimizer_d_y = optimizer_d_y(self.d_y.parameters(), lr=lr_dy, betas=(beta, 0.999))
 
 
+    def set_lrs(self, lr_gx=0.0002, lr_dx=0.0002, lr_gy=0.0002, lr_dy=0.0002):
+        self.optimizer_g_x.param_groups[0]['lr'] = lr_gx
+        self.optimizer_d_x.param_groups[0]['lr'] = lr_dx
+        self.optimizer_g_y.param_groups[0]['lr'] = lr_gy
+        self.optimizer_d_y.param_groups[0]['lr'] = lr_dy
+
     def get_current_losses(self):
         errors_ret = OrderedDict()
         for name in self.loss_names:
