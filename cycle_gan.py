@@ -4,7 +4,7 @@ from dreamai.model import *
 from dreamai.dai_imports import*
 from dreamai_cyclegan.models import networks
 
-class CycleGAN(Network):
+class DaiGAN(Network):
     def __init__(self,
                  g_x = None,
                  g_y = None,
@@ -14,46 +14,55 @@ class CycleGAN(Network):
                  lambda_x = 10.0,
                  lambda_y = 10.0,
                  lambda_idt = 0.5,
-                 lr = 0.0002,
+                 lr_gx = 0.0002,
+                 lr_dx = 0.0002,
+                 lr_gy = 0.0002,
+                 lr_dy = 0.0002,
                  beta = 0.5,
                  criterion = nn.L1Loss(),
                  criterion_gan = networks.GANLoss('lsgan'),
                  criterion_cycle = nn.L1Loss(),
                  criterion_idt = nn.L1Loss(),
-                 optimizer_g = optim.Adam,
-                 optimizer_d = optim.Adam,
+                 optimizer_g_x = optim.Adam,
+                 optimizer_g_y = optim.Adam,
+                 optimizer_d_x = optim.Adam,
+                 optimizer_d_y = optim.Adam,
                  device = None,
                  best_validation_loss = None,
                  best_psnr = None,
-                 best_model_file = 'best_cyclegan.pth',
-                 model_weights = None,
-                 optim_g_weights = None,
-                 optim_d_weights = None
+                 best_model_file = 'best_gan.pth',
                  ):
 
         super().__init__(device=device)
 
-        print(f'CycleGAN using {g_x.__class__.__name__} generator.')
-
         self.g_x = g_x.to(device)
-        self.g_y = g_y.to(device)
         self.d_x = d_x.to(device)
-        self.d_y = d_y.to(device)
+        self.g_y = None
+        self.d_y = None
+        self.is_cycle = False
+        type_print = 'GAN'
+        if g_y is not None:
+            self.g_y = g_y.to(device)
+            self.d_y = d_y.to(device)
+            self.is_cycle = True
+            type_print = 'CycleGAN'
+
+        print(f'{type_print} using {model_type} generator.')
+
 
         self.set_model_params(criterion=criterion, criterion_gan=criterion_gan, criterion_cycle=criterion_cycle, criterion_idt=criterion_idt,
-                              optimizer_g=optimizer_g, optimizer_d=optimizer_d, lambda_x=lambda_x, lambda_y=lambda_y,
-                              best_validation_loss=best_validation_loss, lambda_idt=lambda_idt, lr=lr, beta=beta,
-                              model_type=model_type, best_model_file=best_model_file, best_psnr=best_psnr)
-        if optim_g_weights:
-            self.optimizer_g.load_state_dict(optim_g_weights)
-        if optim_d_weights:
-            self.optimizer_d.load_state_dict(optim_d_weights)
+                              optimizer_g_x=optimizer_g_x, optimizer_d_x=optimizer_d_x, optimizer_g_y=optimizer_g_y, optimizer_d_y=optimizer_d_y,
+                              lambda_x=lambda_x, lambda_y=lambda_y, lambda_idt=lambda_idt,
+                              lr_gx=lr_gx, lr_dx=lr_dx, lr_gy=lr_gy, lr_dy=lr_dy, beta=beta,
+                              best_validation_loss=best_validation_loss, model_type=model_type, best_model_file=best_model_file, best_psnr=best_psnr)
 
         self.loss_names = ['g', 'd_x', 'g_x', 'cycle_x', 'idt_x', 'd_y', 'g_y', 'cycle_y', 'idt_y']
     
     def set_model_params(self, criterion=nn.L1Loss(), criterion_gan=networks.GANLoss('lsgan'), criterion_cycle=nn.L1Loss(), criterion_idt=nn.L1Loss(),
-                         lambda_x=10.0, lambda_y=10.0, lambda_idt=0.5, lr=0.0002, beta=0.5, model_type='cycle_gan', best_psnr=None,
-                         optimizer_g=optim.Adam, optimizer_d=optim.Adam, best_model_file='best_cycle_gan.pth', best_validation_loss=None):
+                         lambda_x=10.0, lambda_y=10.0, lambda_idt=0.5, lr_gx=0.0002, lr_dx=0.0002, lr_gy=0.0002, lr_dy=0.0002, beta=0.5,
+                         model_type='cycle_gan', best_psnr=None,
+                         optimizer_g_x=optim.Adam, optimizer_d_x=optim.Adam, optimizer_g_y=optim.Adam, optimizer_d_y=optim.Adam,
+                         best_model_file='best_cycle_gan.pth', best_validation_loss=None):
         
         self.best_psnr = best_psnr
         self.model_type = model_type
@@ -68,8 +77,12 @@ class CycleGAN(Network):
         self.criterionCycle = criterion_cycle
         self.criterionIdt = criterion_idt
         # initialize optimizers; schedulers will be automatically created by function <BaseModel.setup>.
-        self.optimizer_g = optimizer_g(itertools.chain(self.g_x.parameters(), self.g_y.parameters()), lr=lr, betas=(beta, 0.999))
-        self.optimizer_d = optimizer_d(itertools.chain(self.d_x.parameters(), self.d_y.parameters()), lr=lr, betas=(beta, 0.999))
+        self.optimizer_g_x = optimizer_g_x(self.g_x.parameters(), lr=lr_gx, betas=(beta, 0.999))
+        self.optimizer_d_x = optimizer_d_x(self.d_x.parameters(), lr=lr_dx, betas=(beta, 0.999))
+        if self.is_cycle:
+            self.optimizer_g_y = optimizer_g_y(self.g_y.parameters(), lr=lr_gy, betas=(beta, 0.999))
+            self.optimizer_d_y = optimizer_d_y(self.d_y.parameters(), lr=lr_dy, betas=(beta, 0.999))
+
 
     def get_current_losses(self):
         errors_ret = OrderedDict()
@@ -78,7 +91,7 @@ class CycleGAN(Network):
                 errors_ret[name] = float(getattr(self, 'loss_' + name))  # float(...) works for both scalar tensor and float number
         return errors_ret
 
-    def enlarge(self, inputs):
+    def domain_shift(self, inputs):
         self.eval()
         self.g_x.eval()
         self.g_x = self.g_x.to(self.device)
@@ -92,12 +105,12 @@ class CycleGAN(Network):
         
         self.real_x = batch[0].to(self.device)
         self.real_y = batch[1].to(self.device)
-
         self.fake_y = self.g_x(self.real_x)  # g_x(x)
-        self.rec_x = self.g_y(self.fake_y)   # g_y(g_x(x))
 
-        self.fake_x = self.g_y(self.real_y)  # g_y(y)
-        self.rec_y = self.g_x(self.fake_x)   # g_x(g_y(y))
+        if self.is_cycle:
+            self.rec_x = self.g_y(self.fake_y)   # g_y(g_x(x))
+            self.fake_x = self.g_y(self.real_y)  # g_y(y)
+            self.rec_y = self.g_x(self.fake_x)   # g_x(g_y(y))
 
     def backward_d_basic(self, net_d, real, fake):
         """Calculate GAN loss for the discriminator
@@ -146,14 +159,18 @@ class CycleGAN(Network):
 
         # GAN loss d_x(g_x(x))
         self.loss_g_x = self.criterionGAN(self.d_x(self.fake_y), True)
-        # GAN loss d_y(g_y(y))
-        self.loss_g_y = self.criterionGAN(self.d_y(self.fake_x), True)
-        # Forward cycle loss || g_y(g_x(x)) - x||
-        self.loss_cycle_x = self.criterionCycle(self.rec_x, self.real_x) * lambda_x
-        # Backward cycle loss || g_x(g_y(y)) - y||
-        self.loss_cycle_y = self.criterionCycle(self.rec_y, self.real_y) * lambda_y
-        # combined loss and calculate gradients
-        self.loss_g = self.loss_g_x + self.loss_g_y + self.loss_cycle_x + self.loss_cycle_y + self.loss_idt_x + self.loss_idt_y
+        self.loss_g = self.loss_g_x
+        if self.is_cycle:
+            # GAN loss d_y(g_y(y))
+            self.loss_g_y = self.criterionGAN(self.d_y(self.fake_x), True)
+            # Forward cycle loss || g_y(g_x(x)) - x||
+            self.loss_cycle_x = self.criterionCycle(self.rec_x, self.real_x) * lambda_x
+            # self.loss_cycle_x = self.criterion(self.rec_x, self.real_x) * lambda_x
+            # Backward cycle loss || g_x(g_y(y)) - y||
+            self.loss_cycle_y = self.criterionCycle(self.rec_y, self.real_y) * lambda_y
+            # self.loss_cycle_y = self.criterion(self.rec_y, self.real_y) * lambda_y
+            # combined loss and calculate gradients
+            self.loss_g = self.loss_g_x + self.loss_g_y + self.loss_cycle_x + self.loss_cycle_y + self.loss_idt_x + self.loss_idt_y
         self.loss_g.backward()
 
     def optimize_parameters(self, batch):
@@ -161,16 +178,25 @@ class CycleGAN(Network):
         # forward
         self.forward(batch)      # compute fake images and reconstruction images.
         # g_x and g_y
-        self.set_requires_grad([self.d_x, self.d_y], False)  # ds require no gradients when optimizing Gs
-        self.optimizer_g.zero_grad()  # set g_x and g_y's gradients to zero
+        self.set_requires_grad([self.d_x], False)  # ds require no gradients when optimizing Gs
+        self.optimizer_g_x.zero_grad()  # set g_x and g_y's gradients to zero
+        if self.is_cycle:
+            self.set_requires_grad([self.d_y], False)
+            self.optimizer_g_y.zero_grad()  # set g_x and g_y's gradients to zero
         self.backward_g()             # calculate gradients for g_x and g_y
-        self.optimizer_g.step()       # update g_x and g_y's weights
+        self.optimizer_g_x.step()       # update g_x and g_y's weights
+        if self.is_cycle:
+            self.optimizer_g_y.step()
         # d_x and d_y
-        self.set_requires_grad([self.d_x, self.d_y], True)
-        self.optimizer_d.zero_grad()   # set d_x and d_y's gradients to zero
-        self.backward_d_x()      # calculate gradients for d_x
-        self.backward_d_y()      # calculate graidents for d_y
-        self.optimizer_d.step()  # update d_x and d_y's weights
+        self.set_requires_grad([self.d_x], True)
+        self.optimizer_d_x.zero_grad()
+        self.backward_d_x()
+        self.optimizer_d_x.step()
+        if self.is_cycle:
+            self.set_requires_grad([self.d_y], True)
+            self.optimizer_d_y.zero_grad()
+            self.backward_d_y()
+            self.optimizer_d_y.step()
 
     def batch_to_loss(self,data_batch):
         self.optimize_parameters(data_batch)
@@ -184,126 +210,74 @@ class CycleGAN(Network):
         epochs = cycle_len
         optim_path = Path(self.best_model_file)
         optim_path = optim_path.stem + '_optim' + optim_path.suffix
-        lr = self.optimizer_g.param_groups[0]['lr']
+        # lr = self.optimizer_g.param_groups[0]['lr']
         with mlflow.start_run() as run:
             for cycle in range(num_cycles):
                 for epoch in range(epochs):
                     print(f'Cycle: {cycle+1}/{num_cycles}')
                     print('Epoch:{:3d}/{}\n'.format(epoch+1,epochs))
                     mlflow.log_param('epochs',epochs)
-                    mlflow.log_param('lr',self.optimizer_g.param_groups[0]['lr'])
+                    mlflow.log_param('lr',self.optimizer_g_x.param_groups[0]['lr'])
                     mlflow.log_param('bs',trainloader.batch_size)
                     epoch_train_loss =  self.train_((epoch,epochs), trainloader, print_every)
                             
                     if  validate_every and (epoch % validate_every == 0):
-                        t2 = time.time()
-                        eval_dict = self.evaluate(validloader,thresh=eval_thresh)
-                        epoch_validation_loss = eval_dict['final_loss']
-                        mlflow.log_metric('Train Loss',epoch_train_loss)
-                        mlflow.log_metric('Validation Loss',epoch_validation_loss)
-                        time_elapsed = time.time() - t2
-                        if time_elapsed > 60:
-                            time_elapsed /= 60.
-                            measure = 'min'
+                        if self.model_type == 'enhancement':
+                            self.visual_eval(validloader)
                         else:
-                            measure = 'sec'    
-                        print('\n'+'/'*36+'\n'
-                                f"{time.asctime().split()[-2]}\n"
-                                f"Epoch {epoch+1}/{epochs}\n"    
-                                f"Validation time: {time_elapsed:.6f} {measure}\n"    
-                                f"Epoch training loss: {epoch_train_loss:.6f}\n"                        
-                                f"Epoch validation loss: {epoch_validation_loss:.6f}"
-                            )
-                        if self.model_type == 'classifier':# or self.num_classes is not None:
-                            epoch_accuracy = eval_dict['accuracy']
-                            mlflow.log_metric('Validation Accuracy',epoch_accuracy)
-                            print("Validation accuracy: {:.3f}".format(epoch_accuracy))
-                            print()
-                            if self.num_classes <= 5:
-                                class_acc = eval_dict['class_accuracies']
-                                for cl,ac in class_acc:
-                                    print(f'{cl} accuracy: {ac:.4f}')
-                            # print('\\'*36+'/'*36+'\n')
-                            print('\\'*36+'\n')
-                            if self.best_accuracy == 0. or (epoch_accuracy >= self.best_accuracy):
-                                print('\n**********Updating best accuracy**********\n')
-                                print('Previous best: {:.3f}'.format(self.best_accuracy))
-                                print('New best: {:.3f}\n'.format(epoch_accuracy))
-                                print('******************************************\n')
-                                self.best_accuracy = epoch_accuracy
-                                mlflow.log_metric('Best Accuracy',self.best_accuracy)
-                                
-                                best_gx_path, best_gy_path, optim_g_path, optim_d_path = self.save_model(epoch_accuracy, epoch+1,
+                            t2 = time.time()
+                            eval_dict = self.evaluate(validloader,thresh=eval_thresh)
+                            epoch_validation_loss = eval_dict['final_loss']
+                            mlflow.log_metric('Train Loss',epoch_train_loss)
+                            mlflow.log_metric('Validation Loss',epoch_validation_loss)
+                            time_elapsed = time.time() - t2
+                            if time_elapsed > 60:
+                                time_elapsed /= 60.
+                                measure = 'min'
+                            else:
+                                measure = 'sec'    
+                            print('\n'+'/'*36+'\n'
+                                    f"{time.asctime().split()[-2]}\n"
+                                    f"Epoch {epoch+1}/{epochs}\n"    
+                                    f"Validation time: {time_elapsed:.6f} {measure}\n"    
+                                    f"Epoch training loss: {epoch_train_loss:.6f}\n"                        
+                                    f"Epoch validation loss: {epoch_validation_loss:.6f}"
+                                )
+
+                        if self.model_type == 'super_res':# or self.model_type == 'enhancement':
+                            epoch_psnr = eval_dict['psnr']
+                            mlflow.log_metric('Validation PSNR',epoch_psnr)
+                            print("Validation psnr: {:.3f}".format(epoch_psnr))
+
+                        print('\\'*36+'\n')
+
+                        if saving_crit == 'loss':
+                            if self.best_validation_loss == None or (epoch_validation_loss <= self.best_validation_loss):
+                                print('\n**********Updating best validation loss**********\n')
+                                if self.best_validation_loss is not None:
+                                    print('Previous best: {:.7f}'.format(self.best_validation_loss))
+                                print('New best loss = {:.7f}\n'.format(epoch_validation_loss))
+                                print('*'*49+'\n')
+                                self.best_validation_loss = epoch_validation_loss
+                                mlflow.log_metric('Best Loss',self.best_validation_loss)
+
+                                best_gx_path, best_gy_path, optim_g_x_path, optim_g_y_path = self.save_model(epoch_validation_loss, epoch+1,
                                 weights_folder, mlflow_saved_folder='mlflow_saved_training_models',
                                 mlflow_logged_folder='mlflow_logged_models')
 
-                                # curr_time = str(datetime.now())
-                                # curr_time = '_'+curr_time.split()[1].split('.')[0]
-                                # suff = Path(self.best_model_file).suffix
-                                # best_model_file = Path(self.best_model_file).stem+f'_{str(round(epoch_accuracy,2))}_{str(epoch+1)+curr_time}'
-                                # best_model_path = weights_folder/(best_model_file + suff)
-                                # optim_path = weights_folder/(best_model_file + '_optim' + suff)
-                                # torch.save(self.model.state_dict(), best_model_path)
-                                # torch.save(self.optimizer.state_dict(),optim_path)     
-                                # mlflow.pytorch.log_model(self,'mlflow_logged_models')
-                                # mlflow_save_path = Path('mlflow_saved_training_models')/best_model_file
-                                # mlflow.pytorch.save_model(self,mlflow_save_path)
-                        else:
-                            if self.model_type == 'multi_label_classifier':
-                                epoch_accuracy = eval_dict['accuracy']
-                                mlflow.log_metric('Validation Accuracy',epoch_accuracy)
-                                print("Validation accuracy: {:.3f}".format(epoch_accuracy))
-                                print()
-                                if self.num_classes <= 5:
-                                    class_acc = eval_dict['class_accuracies']
-                                    for cl,ac in class_acc:
-                                        print(f'{cl} accuracy: {ac:.4f}')
-                            elif self.model_type == 'super_res' or self.model_type == 'enhancement':
-                                epoch_psnr = eval_dict['psnr']
-                                mlflow.log_metric('Validation PSNR',epoch_psnr)
-                                print("Validation psnr: {:.3f}".format(epoch_psnr))
-                            # print('\\'*36+'/'*36+'\n')
-                            print('\\'*36+'\n')
-                            if saving_crit == 'loss':
-                                if self.best_validation_loss == None or (epoch_validation_loss <= self.best_validation_loss):
-                                    print('\n**********Updating best validation loss**********\n')
-                                    if self.best_validation_loss is not None:
-                                        print('Previous best: {:.7f}'.format(self.best_validation_loss))
-                                    print('New best loss = {:.7f}\n'.format(epoch_validation_loss))
-                                    print('*'*49+'\n')
-                                    self.best_validation_loss = epoch_validation_loss
-                                    mlflow.log_metric('Best Loss',self.best_validation_loss)
+                        elif saving_crit == 'psnr':
+                            if self.best_psnr == None or (epoch_psnr >= self.best_psnr):
+                                print('\n**********Updating best psnr**********\n')
+                                if self.psnr is not None:
+                                    print('Previous best: {:.7f}'.format(self.best_psnr))
+                                print('New best psnr = {:.7f}\n'.format(epoch_psnr))
+                                print('*'*49+'\n')
+                                self.best_psnr = epoch_psnr
+                                mlflow.log_metric('Best Psnr',self.best_psnr)
 
-                                    best_gx_path, best_gy_path, optim_g_path, optim_d_path = self.save_model(epoch_validation_loss, epoch+1,
-                                    weights_folder, mlflow_saved_folder='mlflow_saved_training_models',
-                                    mlflow_logged_folder='mlflow_logged_models')
-
-                            elif saving_crit == 'psnr':
-                                if self.best_psnr == None or (epoch_psnr >= self.best_psnr):
-                                    print('\n**********Updating best psnr**********\n')
-                                    if self.psnr is not None:
-                                        print('Previous best: {:.7f}'.format(self.best_psnr))
-                                    print('New best psnr = {:.7f}\n'.format(epoch_psnr))
-                                    print('*'*49+'\n')
-                                    self.best_psnr = epoch_psnr
-                                    mlflow.log_metric('Best Psnr',self.best_psnr)
-
-                                    best_gx_path, best_gy_path, optim_g_path, optim_d_path = self.save_model(epoch_psnr, epoch+1,
-                                    weights_folder, mlflow_saved_folder='mlflow_saved_training_models',
-                                    mlflow_logged_folder='mlflow_logged_models')
-
-                            elif saving_crit == 'accuracy':
-                                if self.best_accuracy == 0. or (epoch_accuracy >= self.best_accuracy):
-                                    print('\n**********Updating best accuracy**********\n')
-                                    print('Previous best: {:.3f}'.format(self.best_accuracy))
-                                    print('New best: {:.3f}\n'.format(epoch_accuracy))
-                                    print('******************************************\n')
-                                    self.best_accuracy = epoch_accuracy
-                                    mlflow.log_metric('Best Accuracy',self.best_accuracy)
-
-                                    best_gx_path, best_gy_path, optim_g_path, optim_d_path = self.save_model(epoch_accuracy, epoch+1,
-                                    weights_folder, mlflow_saved_folder='mlflow_saved_training_models',
-                                    mlflow_logged_folder='mlflow_logged_models')
+                                best_gx_path, best_gy_path, optim_g_x_path, optim_g_y_path = self.save_model(epoch_psnr, epoch+1,
+                                weights_folder, mlflow_saved_folder='mlflow_saved_training_models',
+                                mlflow_logged_folder='mlflow_logged_models')
 
                         self.train()
         torch.cuda.empty_cache()
@@ -311,9 +285,10 @@ class CycleGAN(Network):
             try:
                 print('\nLoaded best model\n')
                 self.g_x.load_state_dict(torch.load(best_gx_path))
-                self.g_y.load_state_dict(torch.load(best_gy_path))
-                self.optimizer_g.load_state_dict(torch.load(optim_g_path))
-                self.optimizer_d.load_state_dict(torch.load(optim_d_path))
+                self.optimizer_g_x.load_state_dict(torch.load(optim_g_x_path))
+                if self.is_cycle:
+                    self.g_y.load_state_dict(torch.load(best_gy_path))
+                    self.optimizer_g_y.load_state_dict(torch.load(optim_g_y_path))
                 # os.remove(self.best_model_file)
                 # os.remove(optim_path)
             except:
@@ -365,7 +340,7 @@ class CycleGAN(Network):
         ret['overall_loss'] = loss
         return loss,ret
     
-    def save_model(self, crit='', epoch='', weights_folder='weights_folder',
+    def save_model(self, crit='', epoch='', weights_folder='saved_weights',
                    mlflow_saved_folder='mlflow_saved_training_models', mlflow_logged_folder='mlflow_logged_models'):
             weights_folder = Path(weights_folder)
             os.makedirs(weights_folder, exist_ok=True)
@@ -377,20 +352,41 @@ class CycleGAN(Network):
             curr_time = '_'+curr_time.split()[1].split('.')[0]
             suff = Path(self.best_model_file).suffix
             best_model_file = Path(self.best_model_file).stem+f'_{crit}_{epoch+curr_time}'
+
             best_gx_file = Path(self.best_model_file).stem+f'_gx_{crit}_{epoch+curr_time}'
             best_gy_file = Path(self.best_model_file).stem+f'_gy_{crit}_{epoch+curr_time}'
             best_gx_path = weights_folder/(best_gx_file + suff)
             best_gy_path = weights_folder/(best_gy_file + suff)
-            optim_g_path = weights_folder/(best_model_file + '_g_optim' + suff)
-            optim_d_path = weights_folder/(best_model_file + '_d_optim' + suff)
+
+            optim_g_x_path = weights_folder/(best_model_file + '_g_x_optim' + suff)
+            optim_g_y_path = weights_folder/(best_model_file + '_g_y_optim' + suff)
+
             torch.save(self.g_x.state_dict(), best_gx_path)
-            torch.save(self.g_y.state_dict(), best_gy_path)
-            torch.save(self.optimizer_g.state_dict(),optim_g_path)
-            torch.save(self.optimizer_d.state_dict(),optim_d_path)
+            torch.save(self.optimizer_g_x.state_dict(),optim_g_x_path)
+            if self.is_cycle:
+                torch.save(self.g_y.state_dict(), best_gy_path)
+                torch.save(self.optimizer_g_y.state_dict(),optim_g_y_path)
+
             mlflow.pytorch.log_model(self,mlflow_logged_folder)
             mlflow_save_path = Path(mlflow_saved_folder)/best_model_file
             mlflow.pytorch.save_model(self,mlflow_save_path)
-            return best_gx_path, best_gy_path, optim_g_path, optim_d_path
+            return best_gx_path, best_gy_path, optim_g_x_path, optim_g_y_path
+
+    def visual_eval(self, dataloader, save=True):
+
+        data_batch = random.choice(dataloader.dataset)
+        img, target_domain = data_batch[0],data_batch[1]
+        img = img.unsqueeze(0).to(self.device)
+        gen_domain = self.domain_shift(img)
+        torchvision.utils.save_image([
+                                    #   denorm_tensor(target_domain.cpu()[0], self.img_mean, self.img_std),
+                                    img.cpu()[0],
+                                    target_domain,
+                                    gen_domain.cpu()[0]
+                                    ],
+                                    fp='current_cyclegan_performance.png')
+        if save:
+            self.save_model()
 
     def evaluate(self,dataloader, **kwargs):
 
@@ -402,21 +398,32 @@ class CycleGAN(Network):
         self.eval()
         with torch.no_grad():
             for data_batch in dataloader:
-                img, hr_target, hr_resized = data_batch[0],data_batch[1],data_batch[2]
+                try:
+                    img, target_domain, hr_resized = data_batch[0],data_batch[1],data_batch[2]
+                except:
+                    img, target_domain = data_batch[0],data_batch[1]
                 img = img.to(self.device)
-                hr_target = hr_target.to(self.device)
-                hr_super_res = self.enlarge(img)
-                _,loss_dict = self.compute_loss(hr_super_res,hr_target)
-                torchvision.utils.save_image([
-                                            #   denorm_tensor(hr_target.cpu()[0], self.img_mean, self.img_std),
-                                              hr_target.cpu()[0],
-                                              hr_resized[0],
-                                              hr_super_res.cpu()[0]
-                                              ],
-                                              fp='current_cyclegan_performance.png')
+                target_domain = target_domain.to(self.device)
+                gen_domain = self.domain_shift(img)
+                _,loss_dict = self.compute_loss(gen_domain,target_domain)
+                try:
+                    torchvision.utils.save_image([
+                                                #   denorm_tensor(target_domain.cpu()[0], self.img_mean, self.img_std),
+                                                target_domain.cpu()[0],
+                                                hr_resized[0],
+                                                gen_domain.cpu()[0]
+                                                ],
+                                                fp='current_cyclegan_performance.png')
+                except:
+                    torchvision.utils.save_image([
+                                                #   denorm_tensor(target_domain.cpu()[0], self.img_mean, self.img_std),
+                                                target_domain.cpu()[0],
+                                                gen_domain.cpu()[0]
+                                                ],
+                                                fp='current_cyclegan_performance.png')
                 running_psnr += 10 * math.log10(1 / loss_dict['mse'].item())
                 running_loss += loss_dict['overall_loss'].item()
-                rmse_ += rmse(hr_super_res,hr_target).cpu().numpy()
+                rmse_ += rmse(gen_domain,target_domain).cpu().numpy()
         # self.set_residual(res)
         self.train()
         ret = {}
