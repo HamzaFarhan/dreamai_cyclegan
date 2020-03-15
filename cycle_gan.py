@@ -90,6 +90,23 @@ class DaiGAN(Network):
         self.optimizer_g_y.param_groups[0]['lr'] = lr_gy
         self.optimizer_d_y.param_groups[0]['lr'] = lr_dy
 
+    # def set_optims(optimizer_g_x=optim.Adam,
+    #                optimizer_g_y=optim.Adam,
+    #                optimizer_d_x=optim.Adam,
+    #                optimizer_d_y=optim.Adam,
+    #                lr_gx=0.0002,
+    #                lr_dx=0.0002,
+    #                lr_gy=0.0002,
+    #                lr_dy=0.0002,
+    #                ):
+
+    #     self.optimizer_g_x = optimizer_g_x(self.g_x.parameters(), lr=lr_gx, betas=(beta, 0.999))
+    #     self.optimizer_d_x = optimizer_d_x(self.d_x.parameters(), lr=lr_dx, betas=(beta, 0.999))
+    #     if self.is_cycle:
+    #         self.optimizer_g_y = optimizer_g_y(self.g_y.parameters(), lr=lr_gy, betas=(beta, 0.999))
+    #         self.optimizer_d_y = optimizer_d_y(self.d_y.parameters(), lr=lr_dy, betas=(beta, 0.999))               
+
+
     def get_current_losses(self):
         errors_ret = OrderedDict()
         for name in self.loss_names:
@@ -210,7 +227,7 @@ class DaiGAN(Network):
 
     def fit(self, trainloader, validloader, cycle_len=2, num_cycles=1, print_every=10,
             validate_every=1, save_best_every=1, load_best=False,
-            eval_thresh=0.5, saving_crit='loss'):
+            eval_thresh=0.5, saving_crit='loss', save_weights=True):
         # os.makedirs('saved_weights', exist_ok=True)
         weights_folder = Path('saved_weights')
         epochs = cycle_len
@@ -229,7 +246,7 @@ class DaiGAN(Network):
                             
                     if  validate_every and (epoch % validate_every == 0):
                         if self.model_type == 'enhancement':
-                            self.visual_eval(validloader)
+                            self.visual_eval(validloader, save_weights=save_weights)
                         else:
                             t2 = time.time()
                             eval_dict = self.evaluate(validloader,thresh=eval_thresh)
@@ -268,7 +285,7 @@ class DaiGAN(Network):
                                 mlflow.log_metric('Best Loss',self.best_validation_loss)
 
                                 best_gx_path, best_gy_path, optim_g_x_path, optim_g_y_path = self.save_model(epoch_validation_loss, epoch+1,
-                                weights_folder, mlflow_saved_folder='mlflow_saved_training_models',
+                                weights_folder, save_weights=save_weights, mlflow_saved_folder='mlflow_saved_training_models',
                                 mlflow_logged_folder='mlflow_logged_models')
 
                         elif saving_crit == 'psnr':
@@ -282,7 +299,7 @@ class DaiGAN(Network):
                                 mlflow.log_metric('Best Psnr',self.best_psnr)
 
                                 best_gx_path, best_gy_path, optim_g_x_path, optim_g_y_path = self.save_model(epoch_psnr, epoch+1,
-                                weights_folder, mlflow_saved_folder='mlflow_saved_training_models',
+                                weights_folder, save_weights=save_weights, mlflow_saved_folder='mlflow_saved_training_models',
                                 mlflow_logged_folder='mlflow_logged_models')
 
                         self.train()
@@ -346,7 +363,7 @@ class DaiGAN(Network):
         ret['overall_loss'] = loss
         return loss,ret
     
-    def save_model(self, crit='', epoch='', weights_folder='saved_weights',
+    def save_model(self, crit='', epoch='', weights_folder='saved_weights', save_weights=True,
                    mlflow_saved_folder='mlflow_saved_training_models', mlflow_logged_folder='mlflow_logged_models'):
             weights_folder = Path(weights_folder)
             os.makedirs(weights_folder, exist_ok=True)
@@ -366,19 +383,19 @@ class DaiGAN(Network):
 
             optim_g_x_path = weights_folder/(best_model_file + '_g_x_optim' + suff)
             optim_g_y_path = weights_folder/(best_model_file + '_g_y_optim' + suff)
-
-            torch.save(self.g_x.state_dict(), best_gx_path)
-            torch.save(self.optimizer_g_x.state_dict(),optim_g_x_path)
-            if self.is_cycle:
-                torch.save(self.g_y.state_dict(), best_gy_path)
-                torch.save(self.optimizer_g_y.state_dict(),optim_g_y_path)
+            if save_weights:
+                torch.save(self.g_x.state_dict(), best_gx_path)
+                torch.save(self.optimizer_g_x.state_dict(),optim_g_x_path)
+                if self.is_cycle:
+                    torch.save(self.g_y.state_dict(), best_gy_path)
+                    torch.save(self.optimizer_g_y.state_dict(),optim_g_y_path)
 
             mlflow.pytorch.log_model(self,mlflow_logged_folder)
             mlflow_save_path = Path(mlflow_saved_folder)/best_model_file
             mlflow.pytorch.save_model(self,mlflow_save_path)
             return best_gx_path, best_gy_path, optim_g_x_path, optim_g_y_path
 
-    def visual_eval(self, dataloader, save=True):
+    def visual_eval(self, dataloader, save=True, save_weights=True):
 
         data_batch = random.choice(dataloader.dataset)
         img, target_domain = data_batch[0],data_batch[1]
@@ -392,7 +409,7 @@ class DaiGAN(Network):
                                     ],
                                     fp='current_cyclegan_performance.png')
         if save:
-            self.save_model()
+            self.save_model(save_weights=save_weights)
 
     def evaluate(self,dataloader, **kwargs):
 
